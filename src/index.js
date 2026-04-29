@@ -74,12 +74,17 @@ const {
   TELEGRAM_CHANNEL_ID,
   AMAZON_AFILIADO_TAG,
   SCRAPE_INTERVAL_CRON = "*/5 * * * *",
+  ACTIVE_WINDOW_CRON = "0 * * * *",
+  ACTIVE_WINDOW_MINUTES = "25",
   OFFER_SEND_DELAY_MINUTES = "1",
   MIN_DISCOUNT_PERCENT = "10",
 } = process.env;
 const OFFER_SEND_DELAY_MS = Number(OFFER_SEND_DELAY_MINUTES) * 60 * 1000;
+const ACTIVE_WINDOW_MS = Number(ACTIVE_WINDOW_MINUTES) * 60 * 1000;
 const MIN_DISCOUNT = Number(MIN_DISCOUNT_PERCENT);
 let isJobRunning = false;
+let isActiveWindow = false;
+let activeWindowTimer = null;
 
 function validateEnv() {
   const required = [
@@ -515,6 +520,11 @@ async function sendDealsToTelegram(bot, deals) {
 }
 
 async function runJob(bot) {
+  if (!isActiveWindow) {
+    console.log("Fora da janela ativa. Coleta pausada.");
+    return;
+  }
+
   if (isJobRunning) {
     console.log("Job anterior ainda em execucao. Pulando este ciclo.");
     return;
@@ -533,17 +543,48 @@ async function runJob(bot) {
   }
 }
 
+function stopActiveWindow() {
+  isActiveWindow = false;
+  if (activeWindowTimer) {
+    clearTimeout(activeWindowTimer);
+    activeWindowTimer = null;
+  }
+  console.log("Janela ativa encerrada. Bot pausado ate a proxima hora.");
+}
+
+async function startActiveWindow(bot) {
+  if (activeWindowTimer) {
+    clearTimeout(activeWindowTimer);
+    activeWindowTimer = null;
+  }
+
+  isActiveWindow = true;
+  console.log(
+    `Janela ativa iniciada por ${ACTIVE_WINDOW_MINUTES} minuto(s).`
+  );
+  await runJob(bot);
+
+  activeWindowTimer = setTimeout(() => {
+    stopActiveWindow();
+  }, ACTIVE_WINDOW_MS);
+}
+
 async function bootstrap() {
   validateEnv();
   const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
-
-  await runJob(bot);
 
   cron.schedule(SCRAPE_INTERVAL_CRON, async () => {
     await runJob(bot);
   });
 
-  console.log(`Agendamento ativo com cron: ${SCRAPE_INTERVAL_CRON}`);
+  cron.schedule(ACTIVE_WINDOW_CRON, async () => {
+    await startActiveWindow(bot);
+  });
+
+  console.log(`Coleta interna ativa com cron: ${SCRAPE_INTERVAL_CRON}`);
+  console.log(
+    `Janela de execucao ativa com cron: ${ACTIVE_WINDOW_CRON} por ${ACTIVE_WINDOW_MINUTES} minuto(s)`
+  );
 }
 
 bootstrap().catch((error) => {
