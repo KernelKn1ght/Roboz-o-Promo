@@ -1,6 +1,10 @@
 require("dotenv").config();
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-extra"); // Mudamos para o extra
+const stealth = require("puppeteer-extra-stealth")();
 const { Telegraf } = require("telegraf");
+
+// Adiciona o plugin de furtividade
+chromium.use(stealth);
 
 const {
   TELEGRAM_BOT_TOKEN,
@@ -34,52 +38,72 @@ function escapeHtml(text) {
 
 async function rodarBot() {
     const urlSorteada = SESSOES_AMAZON[Math.floor(Math.random() * SESSOES_AMAZON.length)];
-    console.log(`🚀 Acessando: ${urlSorteada}`);
+    console.log(`🚀 Acessando (Modo Stealth): ${urlSorteada}`);
 
     const browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    // Usamos um User Agent de navegador real
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
+    });
+    
+    const page = await context.newPage();
     const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
     
     try {
-        // Aumentei o tempo de espera e o scroll
-        await page.goto(urlSorteada, { waitUntil: "load", timeout: 60000 });
+        // Amazon às vezes barra o 'load', vamos tentar 'domcontentloaded'
+        await page.goto(urlSorteada, { waitUntil: "domcontentloaded", timeout: 60000 });
         
-        // Scroll simulando humano para disparar o carregamento dos itens
-        for (let i = 0; i < 3; i++) {
-            await page.evaluate(() => window.scrollBy(0, 800));
-            await new Promise(r => setTimeout(r, 2000));
+        // Espera um elemento chave aparecer para confirmar que não caiu no CAPTCHA
+        await page.waitForTimeout(7000);
+
+        // Scroll para carregar os cards dinâmicos
+        for (let i = 0; i < 4; i++) {
+            await page.evaluate(() => window.scrollBy(0, 1000));
+            await page.waitForTimeout(2000);
         }
 
         const ofertas = await page.evaluate(() => {
             const results = [];
-            // Seletor mais genérico possível: qualquer link de produto
-            const links = document.querySelectorAll('a[href*="/dp/"]');
+            // Seletores que funcionam tanto na home quanto em categorias
+            const selectors = [
+                'div[data-testid="deal-card"]',
+                '.s-result-item',
+                '.a-section.dealCard'
+            ];
             
-            links.forEach(l => {
-                const card = l.closest('div');
-                const img = card?.querySelector('img');
-                const preco = card?.querySelector('.a-price .a-offscreen')?.innerText;
-                const antigo = card?.querySelector('.a-text-price .a-offscreen')?.innerText;
-                const titulo = img?.alt || l.innerText;
+            selectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach(card => {
+                    const link = card.querySelector('a[href*="/dp/"]');
+                    const img = card.querySelector('img');
+                    const preco = card.querySelector('.a-price .a-offscreen')?.innerText;
+                    const antigo = card.querySelector('.a-text-price .a-offscreen')?.innerText;
+                    const titulo = img?.alt || card.querySelector('h2')?.innerText;
 
-                if (preco && titulo && titulo.length > 5) {
-                    results.push({
-                        titulo: titulo.trim(),
-                        url: l.href,
-                        imagem: img?.src,
-                        precoAtual: preco,
-                        precoAntigo: antigo
-                    });
-                }
+                    if (link && preco && titulo) {
+                        results.push({
+                            titulo: titulo.trim(),
+                            url: link.href,
+                            imagem: img?.src,
+                            precoAtual: preco,
+                            precoAntigo: antigo
+                        });
+                    }
+                });
             });
             return results;
         });
 
-        // Remove duplicatas da mesma raspagem
-        const únicas = Array.from(new Map(ofertas.map(item => [item.url.split('?')[1], item])).values());
-        console.log(`📦 Itens encontrados: ${únicas.length}`);
+        const unicas = Array.from(new Map(ofertas.map(item => [item.url.split('?')[0], item])).values());
+        console.log(`📦 Itens encontrados: ${unicas.length}`);
 
-        for (const item of únicas.slice(0, 10)) { // Limita a 10 para não floodar
+        if (unicas.length === 0) {
+            // Log do HTML para debug no GitHub Actions se der erro
+            const content = await page.content();
+            console.log("⚠️ HTML Snippet:", content.substring(0, 500));
+        }
+
+        for (const item of unicas.sort(() => Math.random() - 0.5)) {
             const linkFinal = `${item.url.split('?')[0]}?tag=${AMAZON_AFILIADO_TAG}`;
             const desconto = calcularDesconto(item.precoAntigo, item.precoAtual);
             
@@ -98,8 +122,7 @@ async function rodarBot() {
                 }
 
                 console.log(`✅ Postado: ${item.titulo.substring(0, 20)}`);
-                // INTERVALO DE 2 MINUTOS
-                await new Promise(r => setTimeout(r, 120000)); 
+                await new Promise(r => setTimeout(r, 120000)); // 2 min
             } catch (e) {
                 console.error("❌ Erro envio:", e.message);
             }

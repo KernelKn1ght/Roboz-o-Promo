@@ -20,6 +20,8 @@
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "playwright": "^1.53.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-stealth": "^0.0.1-security",
     "telegraf": "^4.16.3"
   }
 }
