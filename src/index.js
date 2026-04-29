@@ -1,134 +1,117 @@
 require("dotenv").config();
-const { chromium } = require("playwright-extra"); // Mudamos para o extra
-const stealth = require("puppeteer-extra-stealth")();
+const { chromium } = require("playwright");
 const { Telegraf } = require("telegraf");
 
-// Adiciona o plugin de furtividade
-chromium.use(stealth);
+const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, AMAZON_AFILIADO_TAG } = process.env;
 
-const {
-  TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHANNEL_ID,
-  AMAZON_AFILIADO_TAG
-} = process.env;
-
-const SESSOES_AMAZON = [
-    "https://www.amazon.com.br/ofertas", 
-    "https://www.amazon.com.br/b?node=16364755011", 
-    "https://www.amazon.com.br/b?node=16254446011", 
-    "https://www.amazon.com.br/b?node=16209062011"
-];
-
-function limparPreco(texto) {
-    if (!texto) return null;
-    const limpo = texto.replace(/[^\d,\.]/g, "").replace(/\./g, "").replace(",", ".");
-    return parseFloat(limpo) || null;
-}
-
-function calcularDesconto(original, atual) {
-    const v1 = limparPreco(original);
-    const v2 = limparPreco(atual);
-    if (!v1 || !v2 || v1 <= v2) return null;
-    return Math.round(((v1 - v2) / v1) * 100) + "%";
-}
-
-function escapeHtml(text) {
-    return text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "";
+function parsing(texto) {
+    if (!texto || texto.includes('/') || texto.includes('(')) return null;
+    const n = parseFloat(texto.replace(/[^\d,]/g, "").replace(",", "."));
+    return (n && n > 0.5) ? n : null;
 }
 
 async function rodarBot() {
-    const urlSorteada = SESSOES_AMAZON[Math.floor(Math.random() * SESSOES_AMAZON.length)];
-    console.log(`🚀 Acessando (Modo Stealth): ${urlSorteada}`);
-
-    const browser = await chromium.launch({ headless: true });
-    // Usamos um User Agent de navegador real
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 }
+    console.log("🚀 Iniciando Deep Search...");
+    // Adicionamos argumentos para evitar detecção e melhorar performance no Linux
+    const browser = await chromium.launch({ 
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
     });
-    
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    });
     const page = await context.newPage();
-    const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
-    
-    try {
-        // Amazon às vezes barra o 'load', vamos tentar 'domcontentloaded'
-        await page.goto(urlSorteada, { waitUntil: "domcontentloaded", timeout: 60000 });
-        
-        // Espera um elemento chave aparecer para confirmar que não caiu no CAPTCHA
-        await page.waitForTimeout(7000);
 
-        // Scroll para carregar os cards dinâmicos
-        for (let i = 0; i < 4; i++) {
-            await page.evaluate(() => window.scrollBy(0, 1000));
-            await page.waitForTimeout(2000);
-        }
+    try {
+        console.log("🔍 Acessando Amazon...");
+        // MUDANÇA: 'commit' dispara assim que os dados chegam, sem esperar trackers
+        await page.goto("https://www.amazon.com.br/s?k=ofertas+do+dia&i=electronics", { 
+            waitUntil: "commit", 
+            timeout: 60000 
+        });
+        
+        // Espera manual controlada
+        await page.waitForLoadState("domcontentloaded");
+        console.log("⏳ Aguardando renderização dos preços...");
+        await page.waitForTimeout(10000); 
+        await page.evaluate(() => window.scrollBy(0, 1000));
 
         const ofertas = await page.evaluate(() => {
             const results = [];
-            // Seletores que funcionam tanto na home quanto em categorias
-            const selectors = [
-                'div[data-testid="deal-card"]',
-                '.s-result-item',
-                '.a-section.dealCard'
-            ];
-            
-            selectors.forEach(sel => {
-                document.querySelectorAll(sel).forEach(card => {
-                    const link = card.querySelector('a[href*="/dp/"]');
-                    const img = card.querySelector('img');
-                    const preco = card.querySelector('.a-price .a-offscreen')?.innerText;
-                    const antigo = card.querySelector('.a-text-price .a-offscreen')?.innerText;
-                    const titulo = img?.alt || card.querySelector('h2')?.innerText;
+            const items = document.querySelectorAll('.s-result-item[data-asin]');
 
-                    if (link && preco && titulo) {
-                        results.push({
-                            titulo: titulo.trim(),
-                            url: link.href,
-                            imagem: img?.src,
-                            precoAtual: preco,
-                            precoAntigo: antigo
-                        });
-                    }
-                });
+            items.forEach(item => {
+                const link = item.querySelector('a[href*="/dp/"]');
+                const titulo = item.querySelector('h2')?.innerText;
+                const img = item.querySelector('img')?.src;
+                
+                const precoAtualEl = item.querySelector('.a-price:not([data-a-unit]) .a-offscreen');
+                const precoAtualTexto = precoAtualEl ? precoAtualEl.innerText : null;
+
+                let precoAntigoTexto = null;
+                const fallbackDe = item.querySelector('.a-text-price span[aria-hidden="true"]') || 
+                                   item.querySelector('.basisPrice .a-offscreen') ||
+                                   item.querySelector('.a-price.a-text-price .a-offscreen') ||
+                                   item.querySelector('.a-text-strike');
+
+                if (fallbackDe) {
+                    precoAntigoTexto = fallbackDe.innerText;
+                } else {
+                    const todosSpans = Array.from(item.querySelectorAll('span'));
+                    const possivelDe = todosSpans.find(s => 
+                        s.innerText.includes('R$') && 
+                        s.innerText !== precoAtualTexto && 
+                        s.innerText.length < 20
+                    );
+                    precoAntigoTexto = possivelDe ? possivelDe.innerText : null;
+                }
+
+                if (link && titulo && precoAtualTexto) {
+                    results.push({
+                        titulo: titulo.trim().split('\n')[0],
+                        url: link.href.split('?')[0],
+                        atual: precoAtualTexto,
+                        antigo: precoAntigoTexto,
+                        img: img
+                    });
+                }
             });
             return results;
         });
 
-        const unicas = Array.from(new Map(ofertas.map(item => [item.url.split('?')[0], item])).values());
-        console.log(`📦 Itens encontrados: ${unicas.length}`);
+        console.log(`📦 Itens encontrados: ${ofertas.length}`);
 
-        if (unicas.length === 0) {
-            // Log do HTML para debug no GitHub Actions se der erro
-            const content = await page.content();
-            console.log("⚠️ HTML Snippet:", content.substring(0, 500));
-        }
+        if (ofertas.length === 0) return;
 
-        for (const item of unicas.sort(() => Math.random() - 0.5)) {
-            const linkFinal = `${item.url.split('?')[0]}?tag=${AMAZON_AFILIADO_TAG}`;
-            const desconto = calcularDesconto(item.precoAntigo, item.precoAtual);
+        const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
+        for (const item of ofertas.slice(0, 10)) {
+            const nAtual = parsing(item.atual);
+            const nAntigo = parsing(item.antigo);
+            const temDescontoReal = nAntigo && nAntigo > nAtual;
+
+            const linkAfiliado = `${item.url}?tag=${AMAZON_AFILIADO_TAG}`;
+            let msg = `🛒 <b>ACHADO DA VEZ</b> 🛒\n\n`;
             
-            let legenda = `🚨 <b>OFERTA ENCONTRADA</b> 🚨\n\n`;
-            if (desconto) legenda += `🔥 <b>${desconto} de DESCONTO!</b>\n`;
-            legenda += `📦 <b>${escapeHtml(item.titulo.substring(0, 110))}...</b>\n\n`;
-            if (item.precoAntigo) legenda += `<s>De: ${item.precoAntigo}</s>\n`;
-            legenda += `💰 <b>Por: ${item.precoAtual}</b>\n\n`;
-            legenda += `🛒 <a href="${linkFinal}">VER NA AMAZON</a>`;
+            if (temDescontoReal) {
+                const perc = Math.round(((nAntigo - nAtual) / nAntigo) * 100);
+                msg += `🔥 <b>${perc}% de DESCONTO!</b>\n`;
+            }
+
+            msg += `📦 <b>${item.titulo.substring(0, 100)}</b>\n\n`;
+            if (temDescontoReal) msg += `<s>De: ${item.antigo}</s>\n`;
+            msg += `💰 <b>Por: ${item.atual}</b>\n\n`;
+            msg += `🔗 <a href="${linkAfiliado}">VER NA AMAZON</a>`;
 
             try {
-                if (item.imagem && item.imagem.startsWith('http')) {
-                    await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.imagem, { caption: legenda, parse_mode: "HTML" });
-                } else {
-                    await bot.telegram.sendMessage(TELEGRAM_CHANNEL_ID, legenda, { parse_mode: "HTML" });
-                }
-
-                console.log(`✅ Postado: ${item.titulo.substring(0, 20)}`);
-                await new Promise(r => setTimeout(r, 120000)); // 2 min
-            } catch (e) {
-                console.error("❌ Erro envio:", e.message);
-            }
+                if (item.img) await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.img, { caption: msg, parse_mode: "HTML" });
+                else await bot.telegram.sendMessage(TELEGRAM_CHANNEL_ID, msg, { parse_mode: "HTML" });
+                
+                console.log(`✅ Postado: ${item.titulo.substring(0, 15)}`);
+                await new Promise(r => setTimeout(r, 60000));
+            } catch (e) { console.log("⚠️ Erro Telegram"); }
         }
-    } catch (error) {
-        console.error("❌ Erro no Script:", error.message);
+    } catch (err) {
+        console.error("❌ Erro capturado:", err.message);
     } finally {
         await browser.close();
         console.log("🏁 Ciclo finalizado.");
