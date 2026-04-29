@@ -1,5 +1,7 @@
 require("dotenv").config();
 const cron = require("node-cron");
+const fs = require("fs");
+const path = require("path");
 const { chromium } = require("playwright");
 const { Telegraf, Markup } = require("telegraf");
 
@@ -78,10 +80,18 @@ const {
   ACTIVE_WINDOW_MINUTES = "25",
   OFFER_SEND_DELAY_MINUTES = "1",
   MIN_DISCOUNT_PERCENT = "10",
+  SCRAPE_FETCH_LIMIT = "80",
+  SEND_BATCH_SIZE = "10",
+  SENT_STATE_FILE = "data/offers-state.json",
+  SENT_RETENTION_DAYS = "7",
 } = process.env;
 const OFFER_SEND_DELAY_MS = Number(OFFER_SEND_DELAY_MINUTES) * 60 * 1000;
 const ACTIVE_WINDOW_MS = Number(ACTIVE_WINDOW_MINUTES) * 60 * 1000;
 const MIN_DISCOUNT = Number(MIN_DISCOUNT_PERCENT);
+const FETCH_LIMIT = Number(SCRAPE_FETCH_LIMIT);
+const BATCH_SIZE = Number(SEND_BATCH_SIZE);
+const SENT_RETENTION_MS = Number(SENT_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
+const SENT_STATE_PATH = path.resolve(process.cwd(), SENT_STATE_FILE);
 let isJobRunning = false;
 let isActiveWindow = false;
 let activeWindowTimer = null;
@@ -111,6 +121,73 @@ function escapeHtml(text) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractAsinFromLink(link) {
+  if (!link) return null;
+  const match = link.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function dealKey(product) {
+  const asin = extractAsinFromLink(product.link);
+  if (asin) return `asin:${asin}`;
+  return `url:${product.link}`;
+}
+
+function loadSentState() {
+  try {
+    if (!fs.existsSync(SENT_STATE_PATH)) {
+      return { sent: {} };
+    }
+    const raw = fs.readFileSync(SENT_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.sent ? parsed : { sent: {} };
+  } catch (error) {
+    console.warn("Falha ao carregar estado de ofertas enviadas:", error.message);
+    return { sent: {} };
+  }
+}
+
+function saveSentState(state) {
+  const dir = path.dirname(SENT_STATE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(SENT_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+}
+
+function pruneSentState(state) {
+  const now = Date.now();
+  const sent = state.sent || {};
+  for (const [key, timestamp] of Object.entries(sent)) {
+    if (!timestamp || now - timestamp > SENT_RETENTION_MS) {
+      delete sent[key];
+    }
+  }
+  return { sent };
+}
+
+function shuffleDeals(deals) {
+  const arr = [...deals];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function pickDealsToSend(deals, state, maxItems) {
+  const sent = state.sent || {};
+  const fresh = deals.filter((item) => !sent[dealKey(item)]);
+  const old = deals.filter((item) => sent[dealKey(item)]);
+
+  const selected = [
+    ...shuffleDeals(fresh),
+    ...shuffleDeals(old),
+  ].slice(0, maxItems);
+
+  return { selected, freshCount: fresh.length };
 }
 
 function toAffiliateUrl(originalUrl, tag) {
@@ -418,7 +495,7 @@ async function extractDealsFromPage(page) {
   });
 }
 
-async function scrapeInformaticaDeals(limit = 10) {
+async function scrapeInformaticaDeals(limit = FETCH_LIMIT) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ userAgent: USER_AGENT });
   const page = await context.newPage();
@@ -533,9 +610,26 @@ async function runJob(bot) {
   isJobRunning = true;
   console.log(`[${new Date().toISOString()}] Iniciando coleta de ofertas...`);
   try {
-    const deals = await scrapeInformaticaDeals(10);
-    console.log(`Ofertas encontradas: ${deals.length}`);
-    await sendDealsToTelegram(bot, deals);
+    const allDeals = await scrapeInformaticaDeals(FETCH_LIMIT);
+    console.log(`Ofertas elegiveis encontradas: ${allDeals.length}`);
+
+    const currentState = pruneSentState(loadSentState());
+    const { selected, freshCount } = pickDealsToSend(
+      allDeals,
+      currentState,
+      BATCH_SIZE
+    );
+    console.log(
+      `Ofertas novas disponiveis: ${freshCount}. Selecionadas para envio: ${selected.length}`
+    );
+
+    await sendDealsToTelegram(bot, selected);
+
+    const now = Date.now();
+    for (const item of selected) {
+      currentState.sent[dealKey(item)] = now;
+    }
+    saveSentState(currentState);
   } catch (error) {
     console.error("Falha na rotina principal:", error);
   } finally {

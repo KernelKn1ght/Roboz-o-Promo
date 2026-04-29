@@ -26,6 +26,14 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Restore sent offers state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/offers-state.json
+          key: sent-offers-${{ github.repository }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            sent-offers-${{ github.repository }}-${{ github.ref_name }}-
+
       - name: Run bot (1h trigger, active for 25 min)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -36,4 +44,15 @@ jobs:
           ACTIVE_WINDOW_MINUTES: "25"
           OFFER_SEND_DELAY_MINUTES: "1"
           MIN_DISCOUNT_PERCENT: "10"
+          SCRAPE_FETCH_LIMIT: "120"
+          SEND_BATCH_SIZE: "10"
+          SENT_STATE_FILE: "data/offers-state.json"
+          SENT_RETENTION_DAYS: "7"
         run: node src/index.js
+
+      - name: Save sent offers state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/offers-state.json
+          key: sent-offers-${{ github.repository }}-${{ github.ref_name }}-${{ github.run_id }}
