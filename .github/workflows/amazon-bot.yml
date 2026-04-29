@@ -26,6 +26,10 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      # PASSO IMPORTANTE: Garantir que a pasta data existe antes de tentar restaurar o cache
+      - name: Create data directory
+        run: mkdir -p data
+
       - name: Restore sent offers state cache
         uses: actions/cache/restore@v4
         with:
@@ -34,7 +38,7 @@ jobs:
           restore-keys: |
             sent-offers-${{ github.repository }}-${{ github.ref_name }}-
 
-      - name: Run bot (1h trigger, active for 25 min)
+      - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
