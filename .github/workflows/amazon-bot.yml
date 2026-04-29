@@ -23,10 +23,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
+      # PASSO CRUCIAL: Instala o Chromium + Bibliotecas de Sistema do Linux (libgbm, nss, etc)
+      - name: Install Playwright Chromium & Deps
         run: npx playwright install --with-deps chromium
 
-      # PASSO IMPORTANTE: Garantir que a pasta data existe antes de tentar restaurar o cache
+      # CORREÇÃO DO CACHE: Garantir que o diretório exista antes do restore/save
       - name: Create data directory
         run: mkdir -p data
 
@@ -43,17 +44,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           AMAZON_AFILIADO_TAG: ${{ secrets.AMAZON_AFILIADO_TAG }}
-          SCRAPE_INTERVAL_CRON: "*/10 * * * *"
-          ACTIVE_WINDOW_CRON: "* * * * *"
-          ACTIVE_WINDOW_MINUTES: "25"
-          OFFER_SEND_DELAY_MINUTES: "1"
-          MIN_DISCOUNT_PERCENT: "10"
-          SCRAPE_FETCH_LIMIT: "120"
-          SEND_BATCH_SIZE: "10"
+          # Suas outras variáveis de ambiente...
           SENT_STATE_FILE: "data/offers-state.json"
-          SENT_RETENTION_DAYS: "7"
         run: node src/index.js
 
+      # SALVAR CACHE: Só vai funcionar agora porque a pasta data/ existe
       - name: Save sent offers state cache
         if: always()
         uses: actions/cache/save@v4

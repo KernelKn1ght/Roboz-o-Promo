@@ -1,5 +1,6 @@
 require("dotenv").config();
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-extra"); // Use playwright-extra se puder, ou mantenha o chromium
+const stealth = require("puppeteer-extra-plugin-stealth")();
 const { Telegraf } = require("telegraf");
 
 const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, AMAZON_AFILIADO_TAG } = process.env;
@@ -7,35 +8,56 @@ const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, AMAZON_AFILIADO_TAG } = process
 function parsing(texto) {
     if (!texto) return null;
     const n = parseFloat(texto.replace(/[^\d,]/g, "").replace(",", "."));
-    // Filtro de preço: Hardware sério raramente custa menos de R$ 30,00.
-    // Isso ajuda a eliminar tranqueiras e livros baratos.
-    return (n && n > 30.0) ? n : null; 
+    return (n && n > 25.0) ? n : null; 
 }
 
 async function rodarBot() {
-    console.log("🚀 Iniciando Crawler: HARDWARE & SETUP ONLY...");
+    console.log("🚀 Iniciando Crawler: HARDWARE & SETUP (MODO PRODUÇÃO)...");
     
+    // Argumentos específicos para rodar no Linux do GitHub sem ser detectado
     const browser = await chromium.launch({ 
         headless: true,
-        args: ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-infobars',
+            '--window-position=0,0',
+            '--ignore-certifcate-errors',
+            '--ignore-certifcate-errors-spki-list',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        ]
     }); 
+
+    // Contexto com permissões e geolocalização fake
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        locale: 'pt-BR'
+        viewport: { width: 1920, height: 1080 },
+        deviceScaleFactor: 1,
+        locale: 'pt-BR',
+        timezoneId: 'America/Sao_Paulo'
     });
+
     const page = await context.newPage();
 
     try {
-        console.log("🔍 Filtrando componentes e periféricos...");
+        // Remove a flag de automação via script injetado
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+
+        console.log("🔍 Acessando Amazon via Headers de Produção...");
         
-        // URL com exclusão de termos (-livro, -capa, -guia) e focada em informática/eletrônicos
-        const urlHardware = "https://www.amazon.com.br/s?k=hardware+ssd+monitor+mouse+teclado+-livro+-book+-guia+-capa&i=computers&rh=p_n_deal_type%3A23565420011";
+        // Mudança na URL: Vamos usar uma busca que a Amazon BR não costuma bloquear em datacenter
+        const urlHardware = "https://www.amazon.com.br/s?k=ssd+nvme+monitor+gamer+ryzen+-livro&i=computers";
         
-        await page.goto(urlHardware, { waitUntil: "domcontentloaded" });
+        await page.goto(urlHardware, { 
+            waitUntil: "networkidle", // Espera a rede acalmar no GitHub
+            timeout: 90000 
+        });
         
-        // Espera maior para os scripts de preço riscado (o "De:") carregarem
-        await page.waitForTimeout(12000); 
-        await page.evaluate(() => window.scrollBy(0, 1200));
+        await page.waitForTimeout(15000); // Tempo para o JS renderizar os preços riscados
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
 
         const ofertas = await page.evaluate(() => {
             const results = [];
@@ -48,18 +70,18 @@ async function rodarBot() {
                 const tituloEl = bloco.querySelector('h2');
                 const titulo = tituloEl?.innerText || "";
 
-                // BLACKLIST RADICAL: Se tiver qualquer termo de livraria, ignora o item.
-                const lixo = ["livro", "book", "edicao", "capa comum", "brochura", "guia", "apostila", "curso", "leitura"];
+                // Blacklist para garantir que NADA de livro passe
+                const lixo = ["livro", "book", "capa comum", "guia", "apostila", "ebook", "kindle"];
                 if (lixo.some(termo => titulo.toLowerCase().includes(termo))) return;
 
                 const linkEl = bloco.querySelector('a[href*="/dp/"]');
                 const imgEl = bloco.querySelector('img.s-image');
 
-                // Preços
+                // Preços (Captura múltipla)
                 const atualEl = bloco.querySelector('.a-price .a-offscreen');
                 const antigoEl = bloco.querySelector('.a-text-price .a-offscreen') || 
                                  bloco.querySelector('.basisPrice .a-offscreen') ||
-                                 bloco.querySelector('span[data-a-strike="true"]');
+                                 bloco.querySelector('.a-price.a-text-price span');
 
                 if (linkEl && titulo && atualEl) {
                     results.push({
@@ -76,46 +98,46 @@ async function rodarBot() {
 
         console.log(`📦 Hardware encontrados: ${ofertas.length}`);
 
-        if (ofertas.length === 0) return;
+        if (ofertas.length === 0) {
+            // Debug para produção: tira print se falhar
+            await page.screenshot({ path: 'data/debug.png' });
+            console.log("📸 Screenshot de erro salva em data/debug.png");
+            return;
+        }
 
         const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
         
-        for (const item of ofertas.slice(0, 8)) {
+        for (const item of ofertas.slice(0, 5)) {
             const vAtual = parsing(item.atual);
             const vAntigo = parsing(item.antigo);
             const linkFinal = `${item.url}?tag=${AMAZON_AFILIADO_TAG}`;
 
-            // Só calcula o desconto se o preço original (De:) foi capturado com sucesso
             const temDesconto = vAntigo && vAntigo > vAtual;
-
-            let msg = `⚙️ <b>HARDWARE & SETUP</b> ⚙️\n\n`;
+            let msg = `⚙️ <b>HARDWARE TECH</b> ⚙️\n\n`;
 
             if (temDesconto) {
                 const perc = Math.round(((vAntigo - vAtual) / vAntigo) * 100);
-                msg += `🔥 <b>MAQUINISTA: ${perc}% OFF</b>\n`;
+                msg += `🚀 <b>OFERTA: ${perc}% OFF</b>\n`;
             }
 
-            msg += `📦 <b>${item.titulo.substring(0, 90)}...</b>\n\n`;
+            msg += `📦 <b>${item.titulo.substring(0, 85)}...</b>\n\n`;
             
             if (temDesconto) {
-                msg += `❌ De: <s>${item.antigo}</s>\n`;
+                msg += `<s>De: ${item.antigo}</s>\n`;
             }
             msg += `💰 <b>Por: ${item.atual}</b>\n\n`;
-            msg += `🔗 <a href="${linkFinal}">LINK DA OFERTA</a>`;
+            msg += `🔗 <a href="${linkFinal}">LINK DA PEÇA</a>`;
 
             try {
-                if (item.img) {
-                    await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.img, { caption: msg, parse_mode: "HTML" });
-                } else {
-                    await bot.telegram.sendMessage(TELEGRAM_CHANNEL_ID, msg, { parse_mode: "HTML" });
-                }
-                console.log(`✅ Postado: ${item.titulo.substring(0, 20)}`);
-                await new Promise(r => setTimeout(r, 60000));
-            } catch (e) { console.log("⚠️ Erro Telegram"); }
+                if (item.img) await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.img, { caption: msg, parse_mode: "HTML" });
+                else await bot.telegram.sendMessage(TELEGRAM_CHANNEL_ID, msg, { parse_mode: "HTML" });
+                
+                await new Promise(r => setTimeout(r, 10000)); 
+            } catch (e) { console.log("Erro Telegram"); }
         }
     } finally {
         await browser.close();
-        console.log("🏁 Operação Hardware Finalizada.");
+        console.log("🏁 Operação Finalizada.");
     }
 }
 
