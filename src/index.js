@@ -101,8 +101,8 @@ async function rodarBot() {
                     estado.enviado.push(asin);
                     fs.writeFileSync(STATE_FILE, JSON.stringify(estado));
 
-                    // INTERVALO DE 5 MINUTOS EXATOS
-                    await new Promise(r => setTimeout(r, 300000)); 
+                    // INTERVALO DE 2 MINUTOS EXATOS
+                    await new Promise(r => setTimeout(r, 120000)); 
                     
                 } catch (e) {
                     console.error("❌ Erro envio:", e.message);
