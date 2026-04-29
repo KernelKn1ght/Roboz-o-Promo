@@ -1,6 +1,5 @@
 require("dotenv").config();
-const { chromium } = require("playwright-extra"); // Use playwright-extra se puder, ou mantenha o chromium
-const stealth = require("puppeteer-extra-plugin-stealth")();
+const { chromium } = require("playwright"); // Volte para o playwright padrão
 const { Telegraf } = require("telegraf");
 
 const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, AMAZON_AFILIADO_TAG } = process.env;
@@ -12,51 +11,38 @@ function parsing(texto) {
 }
 
 async function rodarBot() {
-    console.log("🚀 Iniciando Crawler: HARDWARE & SETUP (MODO PRODUÇÃO)...");
+    console.log("🚀 Iniciando Crawler: HARDWARE & SETUP (MODO CLEAN)...");
     
-    // Argumentos específicos para rodar no Linux do GitHub sem ser detectado
     const browser = await chromium.launch({ 
         headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
-            '--disable-infobars',
-            '--window-position=0,0',
-            '--ignore-certifcate-errors',
-            '--ignore-certifcate-errors-spki-list',
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         ]
     }); 
 
-    // Contexto com permissões e geolocalização fake
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
-        deviceScaleFactor: 1,
         locale: 'pt-BR',
-        timezoneId: 'America/Sao_Paulo'
     });
 
     const page = await context.newPage();
 
     try {
-        // Remove a flag de automação via script injetado
+        // ESSA LINHA substitui o plugin de stealth para o básico:
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         });
 
-        console.log("🔍 Acessando Amazon via Headers de Produção...");
-        
-        // Mudança na URL: Vamos usar uma busca que a Amazon BR não costuma bloquear em datacenter
+        console.log("🔍 Acessando Amazon...");
+        // URL focada em hardware com exclusão de livros
         const urlHardware = "https://www.amazon.com.br/s?k=ssd+nvme+monitor+gamer+ryzen+-livro&i=computers";
         
-        await page.goto(urlHardware, { 
-            waitUntil: "networkidle", // Espera a rede acalmar no GitHub
-            timeout: 90000 
-        });
+        await page.goto(urlHardware, { waitUntil: "domcontentloaded", timeout: 60000 });
         
-        await page.waitForTimeout(15000); // Tempo para o JS renderizar os preços riscados
+        await page.waitForTimeout(15000); 
         await page.evaluate(() => window.scrollBy(0, window.innerHeight));
 
         const ofertas = await page.evaluate(() => {
@@ -70,14 +56,13 @@ async function rodarBot() {
                 const tituloEl = bloco.querySelector('h2');
                 const titulo = tituloEl?.innerText || "";
 
-                // Blacklist para garantir que NADA de livro passe
-                const lixo = ["livro", "book", "capa comum", "guia", "apostila", "ebook", "kindle"];
+                // Blacklist para hardware e periféricos
+                const lixo = ["livro", "book", "capa comum", "guia", "apostila", "ebook", "kindle", "leitura"];
                 if (lixo.some(termo => titulo.toLowerCase().includes(termo))) return;
 
                 const linkEl = bloco.querySelector('a[href*="/dp/"]');
                 const imgEl = bloco.querySelector('img.s-image');
 
-                // Preços (Captura múltipla)
                 const atualEl = bloco.querySelector('.a-price .a-offscreen');
                 const antigoEl = bloco.querySelector('.a-text-price .a-offscreen') || 
                                  bloco.querySelector('.basisPrice .a-offscreen') ||
@@ -96,17 +81,11 @@ async function rodarBot() {
             return results;
         });
 
-        console.log(`📦 Hardware encontrados: ${ofertas.length}`);
+        console.log(`📦 Itens encontrados: ${ofertas.length}`);
 
-        if (ofertas.length === 0) {
-            // Debug para produção: tira print se falhar
-            await page.screenshot({ path: 'data/debug.png' });
-            console.log("📸 Screenshot de erro salva em data/debug.png");
-            return;
-        }
+        if (ofertas.length === 0) return;
 
         const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
-        
         for (const item of ofertas.slice(0, 5)) {
             const vAtual = parsing(item.atual);
             const vAntigo = parsing(item.antigo);
@@ -122,17 +101,14 @@ async function rodarBot() {
 
             msg += `📦 <b>${item.titulo.substring(0, 85)}...</b>\n\n`;
             
-            if (temDesconto) {
-                msg += `<s>De: ${item.antigo}</s>\n`;
-            }
+            if (temDesconto) msg += `<s>De: ${item.antigo}</s>\n`;
             msg += `💰 <b>Por: ${item.atual}</b>\n\n`;
             msg += `🔗 <a href="${linkFinal}">LINK DA PEÇA</a>`;
 
             try {
                 if (item.img) await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.img, { caption: msg, parse_mode: "HTML" });
                 else await bot.telegram.sendMessage(TELEGRAM_CHANNEL_ID, msg, { parse_mode: "HTML" });
-                
-                await new Promise(r => setTimeout(r, 10000)); 
+                await new Promise(r => setTimeout(r, 5000)); 
             } catch (e) { console.log("Erro Telegram"); }
         }
     } finally {
