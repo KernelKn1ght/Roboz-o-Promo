@@ -67,7 +67,7 @@ AMAZON_AFILIADO_TAG=SUA_TAG-20
 SCRAPE_INTERVAL_CRON=*/5 * * * *
 
 # Pausa entre envios de cada produto para o Telegram
-OFFER_SEND_DELAY_MINUTES=1
+OFFER_SEND_DELAY_MINUTES=3.5
 
 # So envia ofertas com desconto acima deste valor (nao inclui igual)
 MIN_DISCOUNT_PERCENT=10
