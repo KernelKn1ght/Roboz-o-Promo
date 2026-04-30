@@ -153,14 +153,14 @@ async function rodarBot() {
                     continue;
                 }
 
-                let msg = `⚙️ <b>HARDWARE TECH</b> ⚙️\n\n`;
+                let msg = `🔥 <b>NOVA OFERTA</b> 🔥\n\n`;
                 const tituloCurto = item.titulo.length > 120 ? `${item.titulo.substring(0, 117)}...` : item.titulo;
                 msg += `📦 <b>${tituloCurto}</b>\n\n`;
-                msg += `De: <s>${item.antigo}</s>\n`;
-                msg += `Por: <b>${item.atual}</b>\n`;
+                msg += ` ❌ De: <s>${item.antigo}</s>\n`;
+                msg += ` ✅ Por: <b>${item.atual}</b>\n`;
                 msg += `Desconto: <b>${desconto.toFixed(0)}%</b>\n`;
                 msg += `Frete: <b>${item.freteGratis ? "Gratis" : "Sem frete gratis"}</b>\n\n`;
-                msg += `🔗 <a href="${linkFinal}">Acessar oferta</a>`;
+                msg += `🔗 <a href="${linkFinal}">clique aqui !!!</a>`;
 
                 try {
                     if (item.img) await bot.telegram.sendPhoto(TELEGRAM_CHANNEL_ID, item.img, { caption: msg, parse_mode: "HTML" });
